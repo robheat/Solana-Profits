@@ -227,7 +227,10 @@ export async function signAndSend(ctx: ExecContext, prepared: PreparedTransactio
   return sendAndConfirm(ctx, toBase64(tx), signature, prepared.lastValidBlockHeight);
 }
 
-export async function sendAndConfirm(ctx: ExecContext, txBase64: string, signature: string, lastValidBlockHeight: bigint): Promise<SendOutcome> {
+/** What sending needs: an RPC, a logger and (for tests) injectable time. */
+export type SendContext = Pick<ExecContext, 'rpc' | 'log' | 'sleep' | 'now'>;
+
+export async function sendAndConfirm(ctx: SendContext, txBase64: string, signature: string, lastValidBlockHeight: bigint): Promise<SendOutcome> {
   const { rpc } = ctx;
   const sleep = ctx.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const now = ctx.now ?? (() => Date.now());

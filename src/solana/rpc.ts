@@ -214,6 +214,15 @@ export class Rpc {
     return { slotsPerEpoch: toBigInt(r.slotsPerEpoch, 'slotsPerEpoch') };
   }
 
+  async getTokenAccountsByOwner(owner: Address, programId: Address): Promise<{ address: Address; account: AccountInfo }[]> {
+    const r = await this.call<{ value: { pubkey: string; account: unknown }[] }>('getTokenAccountsByOwner', [
+      owner,
+      { programId },
+      { encoding: 'base64', commitment: 'confirmed' },
+    ]);
+    return r.value.map((v) => ({ address: toAddress(v.pubkey), account: parseAccount(v.account)! }));
+  }
+
   async simulateTransaction(txBase64: string, accountAddresses: Address[]): Promise<SimulationResult> {
     const r = await this.call<{
       value: { err: unknown; logs: string[] | null; unitsConsumed?: number; accounts?: unknown[] | null };

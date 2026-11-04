@@ -17,6 +17,14 @@ a lying RPC, a hostile pool manager or a misdirected agent can't lose the funds.
   loops, LPs and "high-yield" vaults, each with its reason in [STRATEGY.md](docs/STRATEGY.md#2-options-considered).
 * Growth is measured in SOL. Staking does not protect against SOL's dollar price falling.
 
+## High-risk mode: memecoin momentum bot
+
+At your request there's also a separate, opt-in bot that targets +100% per trade by trading trending
+memecoins (`node src/cli.ts bot …`). **Expect to lose money with it.** Its checks guard against scams, bugs and
+misdirected transactions, not against the market. Read [docs/MEMECOIN_BOT.md](docs/MEMECOIN_BOT.md) and
+paper-trade first (`bot paper`). It runs 24/7 on your own machine or server
+([deploy/solprofits-bot.service](deploy/solprofits-bot.service)). The staking tool below is unaffected.
+
 ## How a deposit is kept safe
 
 1. **Verify.** Each pool is re-verified on-chain on every run:
@@ -84,7 +92,8 @@ paths are in [docs/RUNBOOK.md](docs/RUNBOOK.md).
 
 ## Verification status
 
-* **114 automated tests** (`npm test`) plus a strict type-check (`npm run typecheck`). Cross-checks:
+* **156 automated tests** (`npm test`, covering the staking tool and the bot) plus a strict type-check
+  (`npm run typecheck`). Cross-checks:
   * Transactions, instructions, PDAs, ATAs, signatures and base58 are **byte-for-byte identical** to
     `@solana/web3.js`, `@solana/spl-token`, `@solana/spl-stake-pool` and `bs58`.
   * Account decoders round-trip through the **official** layouts.

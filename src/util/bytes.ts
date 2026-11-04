@@ -55,6 +55,16 @@ export function readU8(b: Uint8Array, offset: number): number {
   return view(b).getUint8(offset);
 }
 
+export function readU16le(b: Uint8Array, offset: number): number {
+  need(b, offset, 2);
+  return view(b).getUint16(offset, true);
+}
+
+export function u16le(n: number): Uint8Array {
+  if (!Number.isInteger(n) || n < 0 || n > 0xffff) throw new RangeError(`u16 out of range: ${n}`);
+  return Uint8Array.of(n & 0xff, n >> 8);
+}
+
 export function readU32le(b: Uint8Array, offset: number): number {
   need(b, offset, 4);
   return view(b).getUint32(offset, true);

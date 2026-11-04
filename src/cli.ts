@@ -39,6 +39,9 @@ Actions (simulation only unless --execute; key via SOLANA_KEYPAIR_PATH or SOLANA
   deposit   [--pool SYM] [--amount SOL]             Stake idle SOL, keeping the fee reserve
   withdraw  [--pool SYM] [--amount TOKENS | --all]  Redeem pool tokens for SOL (instant)
 
+High-risk memecoin bot (separate module, see docs/MEMECOIN_BOT.md):
+  bot …       run "solprofits bot help" for its commands (scan, selfcheck, paper, run, status, liquidate)
+
 Options:
   --address ADDR   wallet public address for read-only commands
   --pool SYM       use a specific allowlisted pool (e.g. JitoSOL)
@@ -422,6 +425,10 @@ async function selfcheck(cfg: AppConfig, rpc: Rpc, values: Values): Promise<numb
 // ---------------------------------------------------------------- main
 
 export async function main(argv: string[]): Promise<number> {
+  if (argv[0] === 'bot') {
+    const { botMain } = await import('./bot/cli.ts');
+    return botMain(argv.slice(1));
+  }
   const { positionals, values } = parseArgs({
     args: argv,
     allowPositionals: true,

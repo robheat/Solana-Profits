@@ -7,7 +7,7 @@
 
 import { createServer, type Server } from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { PublicKey, VersionedTransaction } from '@solana/web3.js';
+import { AddressLookupTableAccount, PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { StakePoolLayout } from '@solana/spl-stake-pool';
 import { getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { ed25519 } from '@noble/curves/ed25519.js';
@@ -19,6 +19,7 @@ import {
   COMPUTE_BUDGET_PROGRAM_ID,
   GENESIS_HASHES,
   SYSTEM_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
 } from '../src/solana/constants.ts';
 import { encodeBase58 } from '../src/util/base58.ts';
@@ -36,6 +37,7 @@ export class RpcFailure extends Error {
 }
 
 type Accounts = Map<string, RawAccount>;
+const WSOL = 'So11111111111111111111111111111111111111112';
 
 interface ExecResult {
   err: unknown;
@@ -75,6 +77,8 @@ export class MockChain {
   supportsGuarded = true;
   /** When > 0, sendTransaction accepts but the tx never lands and block height jumps past expiry. */
   dropTransactions = 0;
+  /** Set by MockJupiter: executable output of a swap at the *current* mock market price. */
+  swapPricer: ((inputMint: string, outputMint: string, inAmount: bigint) => bigint) | null = null;
   statuses = new Map<string, { slot: number; err: unknown }>();
   sentSignatures: string[] = [];
   calls: string[] = [];
@@ -128,6 +132,14 @@ export class MockChain {
         return { context: ctx, value: rpcAccount(this.accounts.get(String(params[0]))) };
       case 'getMultipleAccounts':
         return { context: ctx, value: (params[0] as string[]).map((a) => rpcAccount(this.accounts.get(a))) };
+      case 'getTokenAccountsByOwner': {
+        const owner = String(params[0]);
+        const program = (params[1] as { programId: string }).programId;
+        const value = [...this.accounts]
+          .filter(([, a]) => a.owner === program && a.data.length >= 165 && decodeTokenAccount(a.data).owner === owner)
+          .map(([pubkey, a]) => ({ pubkey, account: rpcAccount(a) }));
+        return { context: ctx, value };
+      }
       case 'getBalance':
         return { context: ctx, value: Number(this.accounts.get(String(params[0]))?.lamports ?? 0n) };
       case 'getLatestBlockhash': {
@@ -191,9 +203,20 @@ export class MockChain {
   execute(bytes: Uint8Array, opts: { verifySignatures: boolean; checkBlockhash: boolean }): ExecResult {
     const tx = VersionedTransaction.deserialize(bytes);
     const msg = tx.message;
-    const keys = msg.staticAccountKeys.map((k) => k.toBase58());
     const logs: string[] = [];
     const state = clone(this.accounts);
+    let keys = msg.staticAccountKeys.map((k) => k.toBase58());
+    if (msg.version === 0 && msg.addressTableLookups.length > 0) {
+      const tables: AddressLookupTableAccount[] = [];
+      for (const l of msg.addressTableLookups) {
+        const acc = state.get(l.accountKey.toBase58());
+        if (!acc) return { err: 'AddressLookupTableNotFound', logs, unitsConsumed: 0, accounts: state };
+        tables.push(new AddressLookupTableAccount({ key: l.accountKey, state: AddressLookupTableAccount.deserialize(acc.data) }));
+      }
+      const ak = msg.getAccountKeys({ addressLookupTableAccounts: tables });
+      keys = [...ak.staticAccountKeys, ...(ak.accountKeysFromLookups?.writable ?? []), ...(ak.accountKeysFromLookups?.readonly ?? [])].map((k) => k.toBase58());
+    }
+    const signerSet = new Set(keys.slice(0, msg.header.numRequiredSignatures));
     if (opts.checkBlockhash) {
       const lvbh = this.blockhashes.get(msg.recentBlockhash);
       if (lvbh === undefined || this.blockHeight > lvbh) return { err: 'BlockhashNotFound', logs, unitsConsumed: 0, accounts: state };
@@ -235,9 +258,17 @@ export class MockChain {
         } else if (program === ASSOCIATED_TOKEN_PROGRAM_ID) {
           units += 25_000;
           this.createAta(state, accs, fail);
-        } else if (program === TOKEN_PROGRAM_ID) {
+        } else if (program === TOKEN_PROGRAM_ID || program === TOKEN_2022_PROGRAM_ID) {
           units += 3_000;
-          this.closeAccount(state, accs, index, fail, keys);
+          if (ix.data[0] === 17) this.syncNative(state, accs, fail);
+          else if (ix.data[0] === 9) this.closeAccount(state, accs, index, fail, keys);
+          else fail('InvalidInstructionData');
+        } else if (program === SYSTEM_PROGRAM_ID) {
+          units += 150;
+          this.systemTransfer(state, accs, ix.data, signerSet, fail);
+        } else if (program === 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4') {
+          units += 80_000;
+          this.jupiterRoute(state, accs, ix.data, fail);
         } else if (program === 'SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy') {
           units += 40_000;
           this.stakePoolIx(state, program, accs, ix.data, fail);
@@ -259,14 +290,14 @@ export class MockChain {
 
   private createAta(state: Accounts, accs: string[], fail: (e: unknown) => never): void {
     const [payer, ata, owner, mint, system, tokenProgram] = accs;
-    if (system !== SYSTEM_PROGRAM_ID || tokenProgram !== TOKEN_PROGRAM_ID) fail('IncorrectProgramId');
-    const expected = getAssociatedTokenAddressSync(new PublicKey(mint!), new PublicKey(owner!)).toBase58();
+    if (system !== SYSTEM_PROGRAM_ID || (tokenProgram !== TOKEN_PROGRAM_ID && tokenProgram !== TOKEN_2022_PROGRAM_ID)) fail('IncorrectProgramId');
+    const expected = getAssociatedTokenAddressSync(new PublicKey(mint!), new PublicKey(owner!), false, new PublicKey(tokenProgram!)).toBase58();
     if (ata !== expected) fail('InvalidSeeds');
     if (state.has(ata!)) return; // idempotent
     const p = state.get(payer!)!;
     if (p.lamports < this.rentToken) fail({ Custom: 1 });
     p.lamports -= this.rentToken;
-    state.set(ata!, { lamports: this.rentToken, owner: TOKEN_PROGRAM_ID, data: encodeTokenAccount({ mint: toAddress(mint!), owner: toAddress(owner!), amount: 0n }) });
+    state.set(ata!, { lamports: this.rentToken, owner: toAddress(tokenProgram!), data: encodeTokenAccount({ mint: toAddress(mint!), owner: toAddress(owner!), amount: 0n }) });
   }
 
   private closeAccount(state: Accounts, accs: string[], _index: number, fail: (e: unknown) => never, _keys: string[]): void {
@@ -275,18 +306,57 @@ export class MockChain {
     if (!a) fail('UninitializedAccount');
     const t = decodeTokenAccount(a!.data);
     if (t.owner !== owner) fail({ Custom: 4 }); // OwnerMismatch
-    if (t.amount !== 0n) fail({ Custom: 11 }); // NonNativeHasBalance
+    if (t.amount !== 0n && t.mint !== WSOL) fail({ Custom: 11 }); // NonNativeHasBalance
     state.get(destination!)!.lamports += a!.lamports;
     state.delete(account!);
   }
 
   private adjustToken(state: Accounts, address: string, mint: string, delta: bigint, fail: (e: unknown) => never): void {
     const a = state.get(address);
-    if (!a || a.owner !== TOKEN_PROGRAM_ID) fail('InvalidAccountData');
+    if (!a || (a.owner !== TOKEN_PROGRAM_ID && a.owner !== TOKEN_2022_PROGRAM_ID)) fail('InvalidAccountData');
     const t = decodeTokenAccount(a!.data);
     if (t.mint !== mint) fail({ Custom: 3 }); // MintMismatch
     if (t.amount + delta < 0n) fail({ Custom: 1 }); // InsufficientFunds
+    if (t.mint === WSOL) a!.lamports += delta; // native SOL moves with wrapped SOL
     a!.data = encodeTokenAccount({ mint: t.mint, owner: t.owner, amount: t.amount + delta, delegate: t.delegate, delegatedAmount: t.delegatedAmount, closeAuthority: t.closeAuthority });
+  }
+
+  private syncNative(state: Accounts, accs: string[], fail: (e: unknown) => never): void {
+    const a = state.get(accs[0]!);
+    if (!a) fail('UninitializedAccount');
+    const t = decodeTokenAccount(a!.data);
+    if (t.mint !== WSOL) fail({ Custom: 19 }); // NonNativeNotSupported
+    a!.data = encodeTokenAccount({ mint: t.mint, owner: t.owner, amount: a!.lamports - this.rentToken });
+  }
+
+  private systemTransfer(state: Accounts, accs: string[], data: Uint8Array, signers: Set<string>, fail: (e: unknown) => never): void {
+    if (data.length !== 12 || new DataView(data.buffer, data.byteOffset, 4).getUint32(0, true) !== 2) fail('InvalidInstructionData');
+    const [from, to] = accs;
+    if (!signers.has(from!)) fail('MissingRequiredSignature');
+    const lamports = u64(data, 4);
+    const src = state.get(from!);
+    if (!src || src.lamports < lamports) fail({ Custom: 1 });
+    src!.lamports -= lamports;
+    const dst = state.get(to!) ?? { lamports: 0n, owner: SYSTEM_PROGRAM_ID, data: new Uint8Array(0) };
+    dst.lamports += lamports;
+    state.set(to!, dst);
+  }
+
+  /** shared_accounts_route semantics: debit source, credit destination at the current mock price, enforce min-out. */
+  private jupiterRoute(state: Accounts, accs: string[], data: Uint8Array, fail: (e: unknown) => never): void {
+    if (!this.swapPricer) fail('ProgramNotAvailable');
+    const t = data.length - 19;
+    const inAmount = u64(data, t);
+    const quotedOut = u64(data, t + 8);
+    const slippage = BigInt(new DataView(data.buffer, data.byteOffset + t + 16, 2).getUint16(0, true));
+    const source = accs[3]!;
+    const destination = accs[6]!;
+    const sourceMint = accs[7]!;
+    const destinationMint = accs[8]!;
+    const out = this.swapPricer!(sourceMint, destinationMint, inAmount);
+    if (out < (quotedOut * (10_000n - slippage)) / 10_000n) fail({ Custom: 6001 }); // SlippageToleranceExceeded
+    this.adjustToken(state, source, sourceMint, -inAmount, fail);
+    this.adjustToken(state, destination, destinationMint, out, fail);
   }
 
   private adjustSupply(state: Accounts, mint: string, delta: bigint): void {

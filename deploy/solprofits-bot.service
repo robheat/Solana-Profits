@@ -1,0 +1,32 @@
+# systemd unit for the HIGH-RISK memecoin bot. Review docs/MEMECOIN_BOT.md first.
+# Install: copy to /etc/systemd/system/, adjust paths/user, then:
+#   systemctl daemon-reload && systemctl enable --now solprofits-bot
+# Logs: journalctl -u solprofits-bot -f      Stop signing instantly: touch /opt/Solana-Profits/HALT
+[Unit]
+Description=solprofits memecoin momentum bot (high risk)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=solprofits
+WorkingDirectory=/opt/Solana-Profits
+Environment=SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
+Environment=SOLANA_KEYPAIR_PATH=/etc/solprofits/bot-keypair.json
+# Optional: Environment=JUPITER_API_URL=https://api.jup.ag
+# Optional: EnvironmentFile=/etc/solprofits/jupiter.env   (JUPITER_API_KEY=...)
+# --yes: installing this unit is the confirmation. The pre-flight swap check still runs on every start.
+ExecStart=/usr/bin/node src/cli.ts bot run --execute --yes
+Restart=on-failure
+RestartSec=60
+# Hardening: read-only system, writable state directory only, no privilege escalation.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/Solana-Profits/data
+CapabilityBoundingSet=
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
