@@ -216,6 +216,12 @@ export interface EngineDeps {
   now: () => number;
 }
 
+/** Set by the strategy router: whether new entries are allowed and the most the bot may hold. */
+export interface MomentumBudget {
+  allowEntries: boolean;
+  maxExposureLamports: bigint;
+}
+
 export interface TickReport {
   actions: string[];
   notes: string[];
@@ -258,7 +264,7 @@ export class Engine {
     return out;
   }
 
-  async tick(opts: { forceScan?: boolean } = {}): Promise<TickReport> {
+  async tick(opts: { forceScan?: boolean; budget?: MomentumBudget } = {}): Promise<TickReport> {
     const { policy, broker, store, events, log } = this.d;
     const nowMs = this.d.now();
     const s = await this.loadOrInit(null);
@@ -289,7 +295,7 @@ export class Engine {
     if (opts.forceScan || nowMs - s.lastScanAt >= policy.scanIntervalSeconds * 1000) {
       s.lastScanAt = nowMs;
       try {
-        await this.scan(s, sol, report.equityLamports, nowMs, report);
+        await this.scan(s, sol, report.equityLamports, nowMs, report, opts.budget);
       } catch (e) {
         report.notes.push(`scan failed: ${(e as Error).message}`);
       }
@@ -352,16 +358,34 @@ export class Engine {
     }
   }
 
-  private async scan(s: BotState, sol: bigint, equity: bigint, nowMs: number, report: TickReport): Promise<void> {
+  private async scan(s: BotState, sol: bigint, equity: bigint, nowMs: number, report: TickReport, budget?: MomentumBudget): Promise<void> {
     const { policy, feed, market, rpc, broker, events, store } = this.d;
     if (s.pendingBuy) {
       report.notes.push(`waiting to reconcile an earlier buy of ${s.pendingBuy.symbol}`);
+      return;
+    }
+    if (budget && !budget.allowEntries) {
+      report.notes.push('memecoin strategy is switched off for the current market regime: no new entries');
       return;
     }
     const size = positionSize({ equityLamports: equity, solLamports: sol, openPositions: s.positions.length, policy, rentLamports: this.d.rentTokenAccount });
     if (size.lamports === null) {
       report.notes.push(size.reason);
       return;
+    }
+    if (budget) {
+      // Size against the router's budget instead of the whole wallet.
+      const exposure = s.positions.reduce((a, p) => a + BigInt(p.lastValueLamports), 0n);
+      const room = budget.maxExposureLamports - exposure;
+      const perPosition = (budget.maxExposureLamports * BigInt(Math.round(policy.positionFraction * 10_000))) / 10_000n;
+      let capped = size.lamports;
+      if (perPosition < capped) capped = perPosition;
+      if (room < capped) capped = room;
+      if (capped < policy.minPositionLamports) {
+        report.notes.push(`memecoin budget ${formatSol(budget.maxExposureLamports, 3)} SOL leaves no room for a minimum-size position`);
+        return;
+      }
+      size.lamports = capped;
     }
     const tokens = await feed.trending();
     const { passed } = rankCandidates(tokens, policy, nowMs, this.exclusions(s, nowMs));

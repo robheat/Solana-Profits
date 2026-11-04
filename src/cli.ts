@@ -42,6 +42,9 @@ Actions (simulation only unless --execute; key via SOLANA_KEYPAIR_PATH or SOLANA
 High-risk memecoin bot (separate module, see docs/MEMECOIN_BOT.md):
   bot …       run "solprofits bot help" for its commands (scan, selfcheck, paper, run, status, liquidate)
 
+Strategy switching by market conditions (see docs/STRATEGIES.md):
+  auto …      run "solprofits auto help" (regime, plan, run, status, backtest)
+
 Options:
   --address ADDR   wallet public address for read-only commands
   --pool SYM       use a specific allowlisted pool (e.g. JitoSOL)
@@ -428,6 +431,10 @@ export async function main(argv: string[]): Promise<number> {
   if (argv[0] === 'bot') {
     const { botMain } = await import('./bot/cli.ts');
     return botMain(argv.slice(1));
+  }
+  if (argv[0] === 'auto') {
+    const { autoMain } = await import('./router/cli.ts');
+    return autoMain(argv.slice(1));
   }
   const { positionals, values } = parseArgs({
     args: argv,

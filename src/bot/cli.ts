@@ -9,6 +9,7 @@ import { GENESIS_HASHES, TOKEN_ACCOUNT_SIZE, TOKEN_PROGRAM_ID } from '../solana/
 import { Rpc } from '../solana/rpc.ts';
 import { loadSignerFromEnv, toAddress, type Address, type Signer } from '../crypto/keys.ts';
 import { formatSol, parseSol } from '../util/amount.ts';
+import { acquireLock } from '../util/lock.ts';
 import { Engine, EventLog, LiveBroker, PaperBroker, type Broker, type Market } from './engine.ts';
 import { JupiterTokenFeed, type TokenFeed } from './feed.ts';
 import { DEFAULT_JUPITER_URL, JupiterClient, WSOL_MINT } from './jupiter.ts';
@@ -304,6 +305,7 @@ export async function botMain(argv: string[], env: NodeJS.ProcessEnv = process.e
       for (const n of r.notes) err(`  note: ${n}`);
       return 0;
     }
+    const release = broker.mode === 'live' ? acquireLock(resolve(d.dataDir, 'trader.lock'), 'bot run') : () => {};
     let stopping = false;
     const stop = () => {
       if (!stopping) out('stopping after the current step…');
@@ -324,6 +326,7 @@ export async function botMain(argv: string[], env: NodeJS.ProcessEnv = process.e
       const wait = Math.min(300_000, d.policy.tickIntervalSeconds * 1000 * Math.max(1, failures));
       for (let waited = 0; waited < wait && !stopping; waited += 1000) await new Promise((r) => setTimeout(r, 1000));
     }
+    release();
     return 0;
   } catch (e) {
     if (e instanceof SwapRejected) err(`refused: ${e.message}`);

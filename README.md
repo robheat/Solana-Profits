@@ -17,6 +17,19 @@ a lying RPC, a hostile pool manager or a misdirected agent can't lose the funds.
   loops, LPs and "high-yield" vaults, each with its reason in [STRATEGY.md](docs/STRATEGY.md#2-options-considered).
 * Growth is measured in SOL. Staking does not protect against SOL's dollar price falling.
 
+## Strategy switching by market conditions
+
+`node src/cli.ts auto …` reads SOL's trend, its volatility and how hot the memecoin market is every hour. It then
+rebalances between three strategies:
+
+* **staking**: the default
+* **a USDC hedge**: the only way to *gain* SOL while the price falls
+* **the memecoin bot**: only in hot markets, and capped
+
+Switches need confirmation, de-risking happens fast and re-risking slowly, and bad or stale data means no trades.
+Start with `auto backtest` on real history and `auto plan` as a dry run. Details:
+[docs/STRATEGIES.md](docs/STRATEGIES.md).
+
 ## High-risk mode: memecoin momentum bot
 
 At your request there's also a separate, opt-in bot that targets +100% per trade by trading trending
@@ -92,7 +105,7 @@ paths are in [docs/RUNBOOK.md](docs/RUNBOOK.md).
 
 ## Verification status
 
-* **156 automated tests** (`npm test`, covering the staking tool and the bot) plus a strict type-check
+* **174 automated tests** (`npm test`, covering the staking tool, the bot and the strategy router) plus a strict type-check
   (`npm run typecheck`). Cross-checks:
   * Transactions, instructions, PDAs, ATAs, signatures and base58 are **byte-for-byte identical** to
     `@solana/web3.js`, `@solana/spl-token`, `@solana/spl-stake-pool` and `bs58`.

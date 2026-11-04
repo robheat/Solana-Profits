@@ -1,0 +1,38 @@
+{
+  "$comment": "Strategy router: reads market conditions and splits the wallet between staking, a USDC hedge and the memecoin bot. See docs/STRATEGIES.md. Thresholds are untuned starting points: backtest and paper-trade before trusting them.",
+  "profile": "balanced",
+  "profiles": {
+    "$comment": "Weights are shares of investable equity (wallet value minus the fee reserve). Anything not allocated stays as liquid SOL.",
+    "conservative": {
+      "risk-on":   { "stake": 1.0,  "hedge": 0.0,  "momentum": 0.0 },
+      "uptrend":   { "stake": 1.0,  "hedge": 0.0,  "momentum": 0.0 },
+      "range":     { "stake": 1.0,  "hedge": 0.0,  "momentum": 0.0 },
+      "downtrend": { "stake": 0.6,  "hedge": 0.4,  "momentum": 0.0 },
+      "unknown":   { "stake": 1.0,  "hedge": 0.0,  "momentum": 0.0 }
+    },
+    "balanced": {
+      "risk-on":   { "stake": 0.8,  "hedge": 0.0,  "momentum": 0.2 },
+      "uptrend":   { "stake": 1.0,  "hedge": 0.0,  "momentum": 0.0 },
+      "range":     { "stake": 1.0,  "hedge": 0.0,  "momentum": 0.0 },
+      "downtrend": { "stake": 0.3,  "hedge": 0.7,  "momentum": 0.0 },
+      "unknown":   { "stake": 1.0,  "hedge": 0.0,  "momentum": 0.0 }
+    },
+    "aggressive": {
+      "risk-on":   { "stake": 0.4,  "hedge": 0.0,  "momentum": 0.6 },
+      "uptrend":   { "stake": 0.8,  "hedge": 0.0,  "momentum": 0.2 },
+      "range":     { "stake": 0.9,  "hedge": 0.0,  "momentum": 0.1 },
+      "downtrend": { "stake": 0.0,  "hedge": 1.0,  "momentum": 0.0 },
+      "unknown":   { "stake": 1.0,  "hedge": 0.0,  "momentum": 0.0 }
+    }
+  },
+  "trend": { "fastHours": 24, "slowHours": 168, "bullThresholdPct": 3, "bearThresholdPct": 3, "exitThresholdPct": 1 },
+  "volatility": { "windowHours": 168, "highAnnualPct": 120, "momentumScaleWhenHigh": 0.5 },
+  "memeHeat": { "topN": 50, "minBreadth": 0.6, "minPassing": 2 },
+  "switching": { "confirmations": 3, "minDwellHours": 24, "evaluateMinutes": 60 },
+  "rebalance": { "bandPct": 10, "minTradeSol": "0.02" },
+  "feeReserveSol": "0.03",
+  "hedge": { "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "symbol": "USDC", "decimals": 6, "slippageBps": 50, "maxPriceImpactPct": 0.5 },
+  "dataCheck": { "maxPriceDisagreementPct": 3, "maxStalenessMinutes": 180 },
+  "momentumExitOnDisable": false,
+  "backtest": { "stakingApyPct": 6, "swapFeeBps": 10, "stakeExitFeeBps": 10, "txFeeSol": "0.00002" }
+}
