@@ -1,0 +1,17 @@
+[
+  {
+    "$comment": "Every field is re-verified on-chain before use: pool owner program, pool mint, mint authority PDA, freeze authority, fee account. A wrong entry is excluded, never used.",
+    "symbol": "JitoSOL",
+    "name": "Jito Staked SOL",
+    "stakePool": "Jito4APyf642JPZPx3hGc6WWJ8zPKtRbRs4P815Awbb",
+    "mint": "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn",
+    "program": "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy"
+  },
+  {
+    "symbol": "bSOL",
+    "name": "BlazeStake Staked SOL",
+    "stakePool": "stk9ApL5HeVAwPLr3TLhDXdZS8ptVu7zp6ov8HFDuMi",
+    "mint": "bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1",
+    "program": "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy"
+  }
+]

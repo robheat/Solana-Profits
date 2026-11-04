@@ -1,0 +1,17 @@
+node_modules/
+
+# Local state: the action/snapshot journal never belongs in git.
+data/
+
+# Never commit key material. Keep keypairs OUTSIDE this repo; these patterns
+# are a last line of defence if one is dropped here by accident.
+*keypair*.json
+*-key.json
+id.json
+wallet.json
+*.secret
+.env
+.env.*
+
+# Kill switch file (see docs/RUNBOOK.md) is local-only.
+HALT

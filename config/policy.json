@@ -1,0 +1,20 @@
+{
+  "$comment": "Risk limits enforced on every action. Each key is explained in docs/RUNBOOK.md#policy. Unknown keys are rejected.",
+  "cluster": "mainnet-beta",
+  "reserveSol": "0.01",
+  "minDepositSol": "0.05",
+  "maxSolPerTransaction": "2",
+  "slippageBps": 20,
+  "maxDepositCostBps": 30,
+  "maxSolDepositFeeBps": 30,
+  "maxSolWithdrawalFeeBps": 50,
+  "maxEpochFeePct": 10,
+  "minPoolTvlSol": "100000",
+  "maxPriorityFeeSol": "0.0001",
+  "minComputeUnitPriceMicroLamports": 5000,
+  "aprSanityMaxPct": 15,
+  "switchMinAprGainPct": 0.5,
+  "monitorMinTotalSol": "0.97",
+  "requireSlippageGuardedInstructions": true,
+  "allowedStakePoolPrograms": ["SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy"]
+}

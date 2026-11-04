@@ -1,0 +1,44 @@
+name: Wallet monitor
+
+# Read-only health check of the staked wallet. It needs only the PUBLIC address:
+#   Settings → Secrets and variables → Actions → Variables → WALLET_ADDRESS
+# Optional: a private RPC URL as the secret SOLANA_RPC_URL (defaults to the public mainnet RPC).
+# Scheduled workflows run only from the default branch. A failed run (critical alert or a broken
+# check) triggers GitHub's failure notification email.
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wallet-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    if: ${{ vars.WALLET_ADDRESS != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --omit=dev
+      - name: Health check (no key material involved)
+        env:
+          WALLET_ADDRESS: ${{ vars.WALLET_ADDRESS }}
+          SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL }}
+        run: |
+          set +e
+          node src/cli.ts monitor
+          code=$?
+          if [ "$code" -eq 1 ]; then
+            echo "::warning::wallet monitor reported warnings; see the log above"
+            exit 0
+          fi
+          exit "$code"

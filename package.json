@@ -1,0 +1,28 @@
+{
+  "name": "solana-profits",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Conservative, auditable tool that grows a small SOL balance via liquid staking, with strict guardrails.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "solprofits": "node src/cli.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test --test-reporter=spec \"test/**/*.test.ts\"",
+    "check": "npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0"
+  },
+  "devDependencies": {
+    "@solana/spl-stake-pool": "1.1.8",
+    "@solana/spl-token": "0.4.9",
+    "@solana/web3.js": "1.98.4",
+    "@types/bn.js": "5.2.0",
+    "@types/node": "22.20.5",
+    "typescript": "5.9.3"
+  }
+}
