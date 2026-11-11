@@ -95,7 +95,8 @@ network access to a Solana RPC and to Jupiter (`lite-api.jup.ag`, or `api.jup.ag
 6. **Stop:**
    * Ctrl-C finishes the current step and stops.
    * `touch HALT` blocks all signing.
-   * `node src/cli.ts bot liquidate --execute` sells everything back to SOL.
+   * `node src/cli.ts bot liquidate --execute` sells everything back to SOL. Stop the running loop first:
+     `liquidate` refuses to run alongside it.
 
 ## Verification status
 

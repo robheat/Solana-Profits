@@ -39,6 +39,8 @@ export interface SleeveDeps {
 
 export interface Snapshot {
   holdings: Holdings;
+  /** Refundable rent sitting in the wallet's own token accounts (counted in total value). */
+  lockedRentLamports: bigint;
   chain: ChainContext;
   evaluations: PoolEvaluation[];
   portfolio: Portfolio;
@@ -58,9 +60,13 @@ export async function takeSnapshot(d: SleeveDeps, momentum: BotState | null): Pr
     // Executable value: what selling it back would actually return.
     hedgeLamports = (await d.jupiter.quote({ inputMint: d.router.hedge.mint, outputMint: WSOL_MINT, amount: hedgeUnits, slippageBps: d.router.hedge.slippageBps })).outAmount;
   }
-  const momentumLamports = (momentum?.positions ?? []).reduce((a, p) => a + BigInt(p.lastValueLamports), 0n);
+  const momentumPositions = momentum?.positions ?? [];
+  const momentumLamports = momentumPositions.reduce((a, p) => a + BigInt(p.lastValueLamports), 0n);
+  const lockedRentLamports =
+    portfolio.positions.reduce((a, p) => a + p.ataLamports, 0n) + (hedgeAcc?.lamports ?? 0n) + BigInt(momentumPositions.length) * d.rentTokenAccount;
   return {
     holdings: { solLamports: portfolio.solLamports, stakeLamports, hedgeLamports, hedgeUnits, momentumLamports },
+    lockedRentLamports,
     chain,
     evaluations,
     portfolio,
@@ -95,7 +101,10 @@ export async function executeMove(d: SleeveDeps, snap: Snapshot, move: Move): Pr
     case 'stake-deposit': {
       const chosen = selectDepositPool(snap.evaluations, snap.portfolio, d.cfg.policy);
       if ('kind' in chosen) return { ok: false, status: 'skipped', detail: chosen.reasons.join('; ') };
-      const plan = planDeposit({ portfolio: snap.portfolio, evaluation: chosen, policy: d.cfg.policy, rentTokenAccount: snap.chain.rentTokenAccount, requestedLamports: move.lamports });
+      // Larger amounts go in over several moves: the staking policy caps each transaction.
+      const cap = d.cfg.policy.maxLamportsPerTransaction;
+      const requestedLamports = move.lamports > cap ? cap : move.lamports;
+      const plan = planDeposit({ portfolio: snap.portfolio, evaluation: chosen, policy: d.cfg.policy, rentTokenAccount: snap.chain.rentTokenAccount, requestedLamports });
       if (plan.kind === 'noop') return { ok: false, status: 'skipped', detail: plan.reasons.join('; ') };
       const prepared = await prepare(execCtx, plan);
       if (!d.signer) return { ok: true, status: 'simulated', detail: prepared.checks.join('; ') };

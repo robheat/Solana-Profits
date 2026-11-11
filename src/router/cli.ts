@@ -21,7 +21,8 @@ import { runBacktest } from './backtest.ts';
 import { parseRouterPolicy, REGIMES, type RouterPolicy } from './policy.ts';
 import { cleanBars, parsePriceCsv, PythBenchmarks, DEFAULT_PYTH_URL, type PriceBar } from './prices.ts';
 import { minimumBars } from './regime.ts';
-import { Router, RouterStore, type Evaluation, type PriceSource, type StepReport } from './router.ts';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { resumeState, Router, RouterStore, type EquityEntry, type Evaluation, type PriceSource, type StepReport } from './router.ts';
 import type { SleeveDeps } from './sleeves.ts';
 
 export const AUTO_HELP = `solprofits auto — switch between strategies based on market conditions (docs/STRATEGIES.md)
@@ -29,7 +30,9 @@ export const AUTO_HELP = `solprofits auto — switch between strategies based on
   auto regime [--csv FILE]                Read market conditions and show which strategy mix they call for
   auto plan [--address A] [--csv FILE]    Dry run: the moves the router would make for this wallet now (simulated)
   auto run --execute [--yes] [--once]     LIVE: rebalance between staking, the USDC hedge and the memecoin bot
-  auto status                             Active regime, pending switch, switch history, memecoin budget
+  auto status                             Active regime, results vs staking only, circuit breaker, switch history
+  auto resume                             Clear the circuit breaker and restart performance tracking
+                                          (also run it after adding or withdrawing funds)
   auto backtest [--csv FILE | --days N] [--profile P] [--start-sol 1] [--json]
                                           Replay the switching rules on SOL price history vs staking only
 
@@ -75,6 +78,10 @@ function printEvaluation(ev: Evaluation, policy: RouterPolicy, activeBefore: str
   out(`Observed now: ${ev.observed} · active regime: ${ev.regime}${ev.update ? ` (${ev.update.reason})` : ` (was ${activeBefore})`}`);
   const w = ev.weights;
   out(`Profile "${policy.profile}" → stake ${pct(w.stake)}, ${policy.hedge.symbol} hedge ${pct(w.hedge)}, memecoins ${pct(w.momentum)}, liquid SOL ${pct(Math.max(0, 1 - w.stake - w.hedge - w.momentum))}`);
+  if (ev.performance) {
+    const p = ev.performance;
+    out(`Results: total ${s4(p.totalLamports)} SOL vs ${s4(p.benchmarkLamports)} SOL if simply staked (${p.relativePct >= 0 ? '+' : ''}${p.relativePct.toFixed(2)}%; circuit breaker at -${policy.circuitBreaker.maxUnderperformancePct}%)`);
+  }
   for (const n of ev.notes) out(`  note: ${n}`);
 }
 
@@ -147,6 +154,7 @@ export async function autoMain(argv: string[], env: NodeJS.ProcessEnv = process.
     out(`Switching ${diff >= 0 ? 'beat' : 'trailed'} staking by ${Math.abs(diff).toFixed(2)}% in SOL terms, with ${r.switches.length} regime switches, ${r.moves} trades and ${r.feesSol.toFixed(5)} SOL in fees.`);
     const total = Object.values(r.hoursInRegime).reduce((a, b) => a + b, 0);
     out(`Time in regime: ${REGIMES.filter((g) => r.hoursInRegime[g] > 0).map((g) => `${g} ${((r.hoursInRegime[g] / total) * 100).toFixed(0)}%`).join(', ')}`);
+    if (r.breakerTrippedAt !== null) out(`Circuit breaker tripped on ${d(r.breakerTrippedAt)} (${policy.circuitBreaker.maxUnderperformancePct}% below staking only): staking only from then on.`);
     out('Note: memecoin trading cannot be replayed (no historical memecoin data); its share is treated as staked. Past behaviour does not predict future results.');
     return 0;
   }
@@ -160,12 +168,37 @@ export async function autoMain(argv: string[], env: NodeJS.ProcessEnv = process.
   const botLiveStore = new StateStore(resolve(dataDir, 'bot-live-state.json'));
   const momentumState = () => (botLiveStore.exists() ? botLiveStore.load() : null);
 
-  if (cmd === 'status') {
+  if (cmd === 'status' || cmd === 'resume') {
     const wallet = values.address ? toAddress(values.address) : cfg.walletAddress;
     if (!wallet) throw new Error('pass --address or set WALLET_ADDRESS');
-    const st = new RouterStore(routerStorePath).load(wallet, Date.now());
+    const statusStore = new RouterStore(routerStorePath);
+    const st = statusStore.load(wallet, Date.now());
+    if (cmd === 'resume') {
+      if (!statusStore.exists()) {
+        out('Nothing to resume: the router has not run for this wallet yet.');
+        return 0;
+      }
+      const wasTripped = st.breaker !== null;
+      statusStore.save(resumeState(st));
+      out(`${wasTripped ? 'Circuit breaker cleared. ' : ''}Performance tracking restarts from the next evaluation (a running "auto run" picks this up on its next cycle).`);
+      return 0;
+    }
     out(`Active regime: ${st.tracker.active} since ${new Date(st.tracker.activeSince).toISOString()}${st.tracker.pending ? ` · pending ${st.tracker.pending} (${st.tracker.pendingCount}/${policy.switching.confirmations})` : ''}`);
     out(`Last evaluation: ${st.lastEvaluatedAt ? new Date(st.lastEvaluatedAt).toISOString() : 'never'} (observed ${st.lastObserved ?? '-'})`);
+    if (st.performance && st.baseline) {
+      const p = st.performance;
+      out(
+        `Results since ${new Date(st.baseline.at).toISOString().slice(0, 10)}: total ${s4(BigInt(p.totalLamports))} SOL vs ${s4(BigInt(p.benchmarkLamports))} SOL if simply staked in ${st.baseline.pool} ` +
+          `(${p.relativePct >= 0 ? '+' : ''}${p.relativePct.toFixed(2)}%), started with ${s4(BigInt(st.baseline.totalLamports))} SOL`,
+      );
+    } else {
+      out('Results: tracking starts with the first live evaluation');
+    }
+    out(
+      st.breaker
+        ? `CIRCUIT BREAKER TRIPPED ${new Date(st.breaker.trippedAt).toISOString()} at ${st.breaker.relativePct.toFixed(1)}% vs staking only: staking only until "auto resume"`
+        : `Circuit breaker: armed at -${policy.circuitBreaker.maxUnderperformancePct}% vs staking only`,
+    );
     out(`Memecoin budget: ${st.momentum.allowEntries ? `up to ${s4(BigInt(st.momentum.maxExposureLamports))} SOL` : 'no new entries'}`);
     for (const sw of st.switches.slice(-15)) out(`  ${new Date(sw.t).toISOString().slice(0, 16)}  ${sw.from} → ${sw.to}`);
     return 0;
@@ -262,6 +295,10 @@ export async function autoMain(argv: string[], env: NodeJS.ProcessEnv = process.
         const r = await engine.liquidate();
         return [...r.actions, ...r.notes].join('; ') || 'nothing to sell';
       },
+      equityLog: (entry: EquityEntry) => {
+        mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+        appendFileSync(resolve(dataDir, 'equity.jsonl'), JSON.stringify(entry) + '\n', { mode: 0o600 });
+      },
       now: () => Date.now(),
     });
     const sol = await rpc.getBalance(wallet);
@@ -292,12 +329,17 @@ export async function autoMain(argv: string[], env: NodeJS.ProcessEnv = process.
     };
     process.on('SIGINT', stop);
     process.on('SIGTERM', stop);
+    // After a failed or untrusted reading, try again in 5 minutes rather than a full hour (or every tick).
+    const RETRY_MS = 5 * 60_000;
+    let nextAttemptAt = 0;
     while (!stopping) {
       try {
         const st = router.state();
-        if (values.once || Date.now() - st.lastEvaluatedAt >= policy.switching.evaluateMinutes * 60_000) {
+        if (values.once || (Date.now() - st.lastEvaluatedAt >= policy.switching.evaluateMinutes * 60_000 && Date.now() >= nextAttemptAt)) {
           const before = st.tracker.active;
+          nextAttemptAt = Date.now() + RETRY_MS;
           const report = await router.step({ commit: true });
+          if (!report.evaluation.dataIssue) nextAttemptAt = 0;
           printEvaluation(report.evaluation, policy, before);
           printPlan(report, policy);
         }

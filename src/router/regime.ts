@@ -28,29 +28,35 @@ export interface Signals {
 
 export type Trend = 'up' | 'down' | 'range';
 
+/**
+ * Hourly bars every reading is computed from. Live and backtests both use exactly the
+ * last `minimumBars` closes, so a backtest replays what the live router would have
+ * computed. Four times the slow average leaves under 0.3% weight on the EMA's start value.
+ */
 export function minimumBars(policy: RouterPolicy): number {
-  return Math.ceil(policy.trend.slowHours * 2);
+  return Math.max(policy.trend.slowHours * 4, policy.volatility.windowHours + 1);
 }
 
-/** null when there is not enough history for the slow average to be meaningful. */
+/** null when there is not enough history. Extra history beyond `minimumBars` is ignored. */
 export function computeSignals(closes: number[], times: number[], policy: RouterPolicy): Signals | null {
-  if (closes.length < minimumBars(policy) || closes.length !== times.length) return null;
-  const fast = ema(closes, policy.trend.fastHours);
-  const slow = ema(closes, policy.trend.slowHours);
-  const i = closes.length - 1;
-  const close = closes[i] as number;
-  const emaFast = fast[i] as number;
-  const emaSlow = slow[i] as number;
+  const n = minimumBars(policy);
+  if (closes.length < n || closes.length !== times.length) return null;
+  const window = closes.length === n ? closes : closes.slice(-n);
+  const fast = ema(window, policy.trend.fastHours);
+  const slow = ema(window, policy.trend.slowHours);
+  const close = window[n - 1] as number;
+  const emaFast = fast[n - 1] as number;
+  const emaSlow = slow[n - 1] as number;
   if (!Number.isFinite(emaFast) || !Number.isFinite(emaSlow) || emaSlow <= 0) return null;
   return {
-    bars: closes.length,
-    at: times[i] as number,
+    bars: n,
+    at: times[times.length - 1] as number,
     close,
     emaFast,
     emaSlow,
     trendPct: (emaFast / emaSlow - 1) * 100,
     priceVsSlowPct: (close / emaSlow - 1) * 100,
-    volAnnualPct: realizedVolAnnualPct(closes, policy.volatility.windowHours),
+    volAnnualPct: realizedVolAnnualPct(window, policy.volatility.windowHours),
   };
 }
 

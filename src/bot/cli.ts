@@ -295,7 +295,14 @@ export async function botMain(argv: string[], env: NodeJS.ProcessEnv = process.e
     await engine.loadOrInit(paper ? parseSol(values['start-sol'] ?? '1') : null);
 
     if (cmd === 'liquidate') {
-      const r = await engine.liquidate();
+      // A running loop would race this for the same positions: it has to be stopped first.
+      const releaseLiquidate = broker.mode === 'live' ? acquireLock(resolve(d.dataDir, 'trader.lock'), 'bot liquidate') : () => {};
+      let r;
+      try {
+        r = await engine.liquidate();
+      } finally {
+        releaseLiquidate();
+      }
       for (const a of r.actions) out(a);
       for (const n of r.notes) err(n);
       return r.notes.some((n) => /did not confirm|error|refused/i.test(n)) ? 2 : 0;

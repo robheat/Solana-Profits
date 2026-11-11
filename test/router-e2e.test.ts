@@ -49,7 +49,7 @@ function routerWorld(live = true) {
   let bars: PriceBar[] = [];
   /** Market shape ending at the current clock with SOL at `price`; the mock DEX quotes the same price. */
   const market = (price: number, endMultiple: number) => {
-    bars = seriesEndingAt(clock.now, price, 600, 300, endMultiple);
+    bars = seriesEndingAt(clock.now, price, 900, 500, endMultiple);
     jup.setPrice(USDC_MINT, 1e9 / price);
   };
   const prices: PriceSource = { history: async (now) => bars.filter((b) => b.t <= now) };
@@ -125,9 +125,17 @@ test('router: stake in good times, rotate into USDC in a confirmed downtrend, re
   }
   assert.equal(r.evaluation.regime, 'downtrend');
   assert.match(r.evaluation.update?.reason ?? '', /min dwell/);
+  // After a 20h gap the confirmations start over: three fresh hourly readings are needed.
   w.clock.now += 20 * H;
   w.market(90, 1.5);
   r = await w.router.step({ commit: true });
+  assert.equal(r.evaluation.regime, 'downtrend');
+  assert.match(r.evaluation.notes.join(' '), /starts its confirmations over/);
+  for (let i = 0; i < 2; i++) {
+    w.clock.now += H;
+    w.market(90, 1.5);
+    r = await w.router.step({ commit: true });
+  }
   assert.equal(r.evaluation.regime, 'uptrend');
   assert.deepEqual(r.results.map((x) => [x.move.kind, x.result.status]), [['hedge-sell', 'confirmed'], ['stake-deposit', 'confirmed']]);
   assert.equal(w.s.chain.tokenBalance(w.usdcAta), 0n);
@@ -169,7 +177,7 @@ test('auto CLI: backtest offline, regime/plan dry runs, refusals, live run, stat
   const poolsPath = join(dir, 'pools.json');
   writeFileSync(poolsPath, JSON.stringify([poolConfigOf(s.jito, 'JitoSOL'), poolConfigOf(s.blaze, 'bSOL')]));
   const liveCsv = join(dir, 'live.csv');
-  writeFileSync(liveCsv, toCsv(seriesEndingAt(Date.now(), 150, 600, 300, 1.3)));
+  writeFileSync(liveCsv, toCsv(seriesEndingAt(Date.now(), 150, 900, 500, 1.3)));
   const crashCsv = join(dir, 'crash.csv');
   writeFileSync(crashCsv, toCsv(series(24 * 90, 24 * 30, 0.5)));
   const env = { SOLANA_RPC_URL: rpc.url, JUPITER_API_URL: api.url, SOLPROFITS_POOLS: poolsPath, SOLPROFITS_DATA_DIR: join(dir, 'data'), SOLPROFITS_LEDGER: join(dir, 'ledger.jsonl') };
@@ -213,4 +221,83 @@ test('auto CLI: backtest offline, regime/plan dry runs, refusals, live run, stat
     rpc.server.close();
     api.server.close();
   }
+});
+
+test('circuit breaker: a hedge caught by a rally trips it, the wallet returns to staking, and only resume re-arms it', async () => {
+  const w = routerWorld();
+  // Confirmed downtrend at $100: 70% goes into USDC. The first step also sets the baseline.
+  for (let i = 0; i < 3; i++) {
+    w.market(100, 0.6);
+    await w.router.step({ commit: true });
+    w.clock.now += H;
+  }
+  assert.equal(w.router.state().tracker.active, 'downtrend');
+  assert.ok((w.s.chain.tokenBalance(w.usdcAta) ?? 0n) > 60_000_000n);
+  const base = w.router.state().baseline!;
+  assert.equal(base.pool, 'JitoSOL');
+  assert.ok(BigInt(base.totalLamports) > 999_000_000n);
+
+  // SOL jumps to $125 while the history still reads as a downtrend: the USDC buys back far less SOL.
+  w.market(125, 0.6);
+  let r = await w.router.step({ commit: true });
+  assert.equal(r.evaluation.breakerTripped, true, JSON.stringify(r.evaluation.performance, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)));
+  assert.ok(r.evaluation.performance!.relativePct < -10);
+  assert.deepEqual(r.evaluation.weights, { stake: 1, hedge: 0, momentum: 0 });
+  assert.deepEqual(r.results.map((x) => [x.move.kind, x.result.status]), [['hedge-sell', 'confirmed'], ['stake-deposit', 'confirmed']]);
+  assert.equal(w.s.chain.tokenBalance(w.usdcAta), 0n);
+  assert.ok(w.router.state().breaker);
+
+  // Still a downtrend an hour later: the breaker keeps it in staking only.
+  w.clock.now += H;
+  w.market(125, 0.6);
+  r = await w.router.step({ commit: true });
+  assert.equal(r.evaluation.regime, 'downtrend');
+  assert.equal(r.evaluation.breakerActive, true);
+  assert.equal(r.results.length, 0);
+
+  // Resume clears it and restarts tracking from the current value.
+  const { resumeState } = await import('../src/router/router.ts');
+  w.store.save(resumeState(w.router.state()));
+  w.clock.now += H;
+  w.market(125, 0.6);
+  r = await w.router.step({ commit: true });
+  assert.equal(r.evaluation.breakerActive, false);
+  assert.equal(r.results[0]?.move.kind, 'stake-withdraw', 're-armed: the downtrend allocation applies again');
+  assert.ok(BigInt(w.router.state().baseline!.totalLamports) < BigInt(base.totalLamports));
+});
+
+test('monitor counts the hedge instead of raising a false "drained" alarm; unvalued holdings downgrade it', async () => {
+  const { runMonitor } = await import('../src/core/monitor.ts');
+  const { otherHoldings } = await import('../src/router/valuation.ts');
+  const { load } = await import('./world.ts');
+  const { encodeTokenAccount } = await import('./fixtures.ts');
+  const w = routerWorld();
+  // 0.3 SOL liquid + 105 USDC (worth 0.7 SOL at $150).
+  w.s.chain.setWallet(w.s.wallet, 300_000_000n);
+  w.s.chain.setAccount(w.usdcAta, { lamports: 2_039_280n, owner: TOKEN_PROGRAM_ID, data: encodeTokenAccount({ mint: USDC_MINT, owner: w.s.wallet, amount: 105_000_000n }) });
+  const world = await load(w.s);
+  const base = { chain: world.ctx, policy: w.s.policy, evaluations: world.evaluations, programs: [], portfolio: world.portfolio };
+  assert.ok(runMonitor(base).alerts.some((a) => a.code === 'value-floor'), 'without the hedge the wallet looks drained');
+  const env = { SOLPROFITS_DATA_DIR: mkdtempSync(join(tmpdir(), 'solprofits-val-')) };
+  const valued = await otherHoldings({ rpc: w.s.rpc, wallet: w.s.wallet, repoRoot: REPO_ROOT, env, quoter: w.jup });
+  assert.equal(valued.length, 1);
+  assert.ok(valued[0]!.valueLamports! > 690_000_000n);
+  assert.ok(!runMonitor({ ...base, otherHoldings: valued }).alerts.some((a) => a.code === 'value-floor' || a.code === 'value-unknown'));
+  const failing = await otherHoldings({ rpc: w.s.rpc, wallet: w.s.wallet, repoRoot: REPO_ROOT, env, quoter: { quote: async () => { throw new Error('offline'); } } });
+  assert.equal(failing[0]!.valueLamports, null);
+  const report = runMonitor({ ...base, otherHoldings: failing });
+  assert.ok(report.alerts.some((a) => a.code === 'value-unknown' && a.level === 'warning'));
+  assert.ok(!report.alerts.some((a) => a.code === 'value-floor'));
+});
+
+test('trading lock: a second loop is refused while the first is alive; a stale lock is taken over', async () => {
+  const { acquireLock } = await import('../src/util/lock.ts');
+  const path = join(mkdtempSync(join(tmpdir(), 'solprofits-lock-')), 'trader.lock');
+  writeFileSync(path, `${process.ppid} other\n`); // a live process that is not us
+  assert.throws(() => acquireLock(path, 'test'), /already running/);
+  writeFileSync(path, '999999999 dead\n');
+  const release = acquireLock(path, 'test');
+  assert.match(readFileSync(path, 'utf8'), new RegExp(`^${process.pid} test`));
+  release();
+  assert.throws(() => readFileSync(path, 'utf8'));
 });

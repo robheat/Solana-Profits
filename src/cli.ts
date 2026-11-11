@@ -23,6 +23,7 @@ import { evaluatePools, inspectPrograms, rankPools, type PoolEvaluation } from '
 import { loadPortfolio, type Portfolio } from './core/portfolio.ts';
 import { loadSignerFromEnv, toAddress, type Address, type Signer } from './crypto/keys.ts';
 import { deriveWithdrawAuthority } from './solana/programs.ts';
+import { otherHoldings } from './router/valuation.ts';
 import { Rpc } from './solana/rpc.ts';
 import { formatSol, formatUnits, parseSol, parseUnits } from './util/amount.ts';
 
@@ -475,6 +476,11 @@ export async function main(argv: string[]): Promise<number> {
       }
       printChain(world.chain, rpc);
       printPortfolio(world.portfolio!, snaps);
+      const others = await otherHoldings({ rpc, wallet, repoRoot: cfg.repoRoot, env: process.env });
+      if (others.length) {
+        out('  Held by the other strategies (not in the total above):');
+        for (const o of others) out(`    ${o.label}: ${o.valueLamports === null ? 'not valued' : sol(o.valueLamports, 6)} — ${o.detail}`);
+      }
       printPools(world.evaluations, snaps, world.chain);
       return 0;
     }
@@ -498,12 +504,15 @@ export async function main(argv: string[]): Promise<number> {
       const wallet = readOnlyWallet(cfg, values, true)!;
       const world = await loadWorld(cfg, rpc, wallet);
       const programs = await inspectPrograms(rpc, [...new Set(cfg.pools.map((p) => p.program))], world.chain);
-      const report = runMonitor({ chain: world.chain, policy: cfg.policy, evaluations: world.evaluations, programs, portfolio: world.portfolio! });
+      const others = await otherHoldings({ rpc, wallet, repoRoot: cfg.repoRoot, env: process.env });
+      const report = runMonitor({ chain: world.chain, policy: cfg.policy, evaluations: world.evaluations, programs, portfolio: world.portfolio!, otherHoldings: others });
+      const total = others.reduce((a, o) => a + (o.valueLamports ?? 0n), world.portfolio!.totalValueLamports);
       if (values.json) {
-        printJson({ ...report, totalValueLamports: world.portfolio!.totalValueLamports });
+        printJson({ ...report, totalValueLamports: total, otherHoldings: others });
       } else {
         printChain(world.chain, rpc);
-        out(`Total value: ${sol(world.portfolio!.totalValueLamports, 9)}`);
+        out(`Total value: ${sol(total, 9)}`);
+        for (const o of others) out(`  includes ${o.label}: ${o.valueLamports === null ? 'not valued' : sol(o.valueLamports, 6)} — ${o.detail}`);
         if (report.alerts.length === 0) out('No alerts.');
         for (const a of report.alerts) out(`[${a.level.toUpperCase()}] ${a.message}`);
         for (const r of report.recommendations) out(`suggestion: ${r}`);

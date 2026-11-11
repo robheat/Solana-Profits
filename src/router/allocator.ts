@@ -45,12 +45,21 @@ export interface RebalancePlan {
 const share = (x: bigint, w: number): bigint => (x * BigInt(Math.round(w * 1_000_000))) / 1_000_000n;
 const abs = (x: bigint): bigint => (x < 0n ? -x : x);
 
+export interface PlanOptions {
+  /** Close memecoin positions now, whatever `momentumExitOnDisable` says (circuit breaker). */
+  forceMomentumExit?: boolean;
+  /** The staking tool's own minimum deposit; smaller stake deposits would be refused. */
+  minStakeDepositLamports?: bigint;
+}
+
 /**
- * Only trades when a strategy is off target by more than the band (avoids churn), never
- * below the minimum trade size, frees liquidity before funding, and never spends the
- * fee reserve or SOL earmarked for the memecoin budget.
+ * Only moves money between strategies when one is off target by more than the band
+ * (avoids churn), never below the minimum trade size, frees liquidity before funding,
+ * and never spends the fee reserve or SOL earmarked for the memecoin budget. Idle SOL is
+ * the exception to the band: it earns nothing, so it is staked whenever staking is under
+ * target.
  */
-export function planRebalance(h: Holdings, w: Weights, policy: RouterPolicy): RebalancePlan {
+export function planRebalance(h: Holdings, w: Weights, policy: RouterPolicy, opts: PlanOptions = {}): RebalancePlan {
   const notes: string[] = [];
   const total = h.solLamports + h.stakeLamports + h.hedgeLamports + h.momentumLamports;
   const investable = total > policy.feeReserveLamports ? total - policy.feeReserveLamports : 0n;
@@ -59,7 +68,7 @@ export function planRebalance(h: Holdings, w: Weights, policy: RouterPolicy): Re
   const minTrade = policy.rebalance.minTradeLamports;
   const moves: Move[] = [];
 
-  if (w.momentum === 0 && h.momentumLamports > 0n && policy.momentumExitOnDisable) moves.push({ kind: 'momentum-exit' });
+  if (w.momentum === 0 && h.momentumLamports > 0n && (policy.momentumExitOnDisable || opts.forceMomentumExit)) moves.push({ kind: 'momentum-exit' });
 
   // 1) Free liquidity from over-weight strategies.
   let freed = 0n;
@@ -89,10 +98,11 @@ export function planRebalance(h: Holdings, w: Weights, policy: RouterPolicy): Re
     moves.push({ kind: 'hedge-buy', lamports: amount });
     available -= amount;
   }
-  if (stakeDiff > band && stakeDiff >= minTrade && available >= minTrade) {
-    const amount = stakeDiff < available ? stakeDiff : available;
-    moves.push({ kind: 'stake-deposit', lamports: amount });
-    available -= amount;
+  const minStake = opts.minStakeDepositLamports !== undefined && opts.minStakeDepositLamports > minTrade ? opts.minStakeDepositLamports : minTrade;
+  const stakeAmount = stakeDiff < available ? stakeDiff : available;
+  if (stakeAmount >= minStake) {
+    moves.push({ kind: 'stake-deposit', lamports: stakeAmount });
+    available -= stakeAmount;
   }
   if (available < 0n) notes.push('liquid SOL is below the fee reserve + memecoin earmark; nothing new is funded until it recovers');
 

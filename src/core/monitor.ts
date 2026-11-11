@@ -29,8 +29,13 @@ export function runMonitor(params: {
   evaluations: PoolEvaluation[];
   programs: ProgramStatus[];
   portfolio: Portfolio;
+  /** Holdings of the other strategies (hedge, memecoin positions); value null = could not be valued. */
+  otherHoldings?: { label: string; valueLamports: bigint | null }[];
 }): MonitorReport {
   const { chain, policy, evaluations, programs, portfolio } = params;
+  const others = params.otherHoldings ?? [];
+  const unvalued = others.filter((o) => o.valueLamports === null);
+  const totalValue = others.reduce((a, o) => a + (o.valueLamports ?? 0n), portfolio.totalValueLamports);
   const alerts: Alert[] = [];
   const recommendations: string[] = [];
 
@@ -72,12 +77,21 @@ export function runMonitor(params: {
       message: `wallet has ${formatSol(portfolio.solLamports)} SOL liquid; keep at least ${formatSol(policy.reserveLamports)} SOL so an exit can be paid for`,
     });
   }
-  if (policy.monitorMinTotalLamports !== null && portfolio.totalValueLamports < policy.monitorMinTotalLamports) {
-    alerts.push({
-      level: 'critical',
-      code: 'value-floor',
-      message: `total value ${formatSol(portfolio.totalValueLamports)} SOL is below the alert floor ${formatSol(policy.monitorMinTotalLamports)} SOL — check recent transactions for unauthorized activity`,
-    });
+  if (policy.monitorMinTotalLamports !== null && totalValue < policy.monitorMinTotalLamports) {
+    if (unvalued.length > 0) {
+      // Something is held that we could not price: a low total proves nothing either way.
+      alerts.push({
+        level: 'warning',
+        code: 'value-unknown',
+        message: `total value could not be checked against the alert floor: ${unvalued.map((o) => o.label).join(', ')} could not be valued (${formatSol(totalValue)} SOL without it)`,
+      });
+    } else {
+      alerts.push({
+        level: 'critical',
+        code: 'value-floor',
+        message: `total value ${formatSol(totalValue)} SOL is below the alert floor ${formatSol(policy.monitorMinTotalLamports)} SOL — check recent transactions for unauthorized activity`,
+      });
+    }
   }
 
   // Advice (never automatic): idle SOL and better pools.

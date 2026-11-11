@@ -368,24 +368,17 @@ export class Engine {
       report.notes.push('memecoin strategy is switched off for the current market regime: no new entries');
       return;
     }
-    const size = positionSize({ equityLamports: equity, solLamports: sol, openPositions: s.positions.length, policy, rentLamports: this.d.rentTokenAccount });
+    const size = positionSize({
+      equityLamports: equity,
+      solLamports: sol,
+      openPositions: s.positions.length,
+      policy,
+      rentLamports: this.d.rentTokenAccount,
+      ...(budget ? { budget: { maxExposureLamports: budget.maxExposureLamports, exposureLamports: s.positions.reduce((a, p) => a + BigInt(p.lastValueLamports), 0n) } } : {}),
+    });
     if (size.lamports === null) {
       report.notes.push(size.reason);
       return;
-    }
-    if (budget) {
-      // Size against the router's budget instead of the whole wallet.
-      const exposure = s.positions.reduce((a, p) => a + BigInt(p.lastValueLamports), 0n);
-      const room = budget.maxExposureLamports - exposure;
-      const perPosition = (budget.maxExposureLamports * BigInt(Math.round(policy.positionFraction * 10_000))) / 10_000n;
-      let capped = size.lamports;
-      if (perPosition < capped) capped = perPosition;
-      if (room < capped) capped = room;
-      if (capped < policy.minPositionLamports) {
-        report.notes.push(`memecoin budget ${formatSol(budget.maxExposureLamports, 3)} SOL leaves no room for a minimum-size position`);
-        return;
-      }
-      size.lamports = capped;
     }
     const tokens = await feed.trending();
     const { passed } = rankCandidates(tokens, policy, nowMs, this.exclusions(s, nowMs));

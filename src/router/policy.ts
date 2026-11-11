@@ -28,6 +28,11 @@ export interface RouterPolicy {
   hedge: { mint: Address; symbol: string; decimals: number; slippageBps: number; maxPriceImpactPct: number };
   dataCheck: { maxPriceDisagreementPct: number; maxStalenessMinutes: number };
   momentumExitOnDisable: boolean;
+  /**
+   * Portfolio-level stop: when total value falls this far below what simply staking the
+   * starting balance would be worth, the router returns to staking only until resumed.
+   */
+  circuitBreaker: { maxUnderperformancePct: number };
   backtest: { stakingApyPct: number; swapFeeBps: number; stakeExitFeeBps: number; txFeeLamports: bigint };
 }
 
@@ -62,7 +67,7 @@ function weights(v: unknown, path: string): Weights {
 
 export function parseRouterPolicy(raw: unknown): RouterPolicy {
   const o = obj(raw, 'router-policy', [
-    'profile', 'profiles', 'trend', 'volatility', 'memeHeat', 'switching', 'rebalance', 'feeReserveSol', 'hedge', 'dataCheck', 'momentumExitOnDisable', 'backtest',
+    'profile', 'profiles', 'trend', 'volatility', 'memeHeat', 'switching', 'rebalance', 'feeReserveSol', 'hedge', 'dataCheck', 'momentumExitOnDisable', 'circuitBreaker', 'backtest',
   ]);
   const profilesRaw = o.profiles;
   if (!profilesRaw || typeof profilesRaw !== 'object') throw new Error('router-policy.profiles must be an object');
@@ -91,6 +96,7 @@ export function parseRouterPolicy(raw: unknown): RouterPolicy {
   const rb = obj(o.rebalance, 'rebalance', ['bandPct', 'minTradeSol']);
   const hd = obj(o.hedge, 'hedge', ['mint', 'symbol', 'decimals', 'slippageBps', 'maxPriceImpactPct']);
   const dc = obj(o.dataCheck, 'dataCheck', ['maxPriceDisagreementPct', 'maxStalenessMinutes']);
+  const cb = obj(o.circuitBreaker, 'circuitBreaker', ['maxUnderperformancePct']);
   const bt = obj(o.backtest, 'backtest', ['stakingApyPct', 'swapFeeBps', 'stakeExitFeeBps', 'txFeeSol']);
   if (typeof o.momentumExitOnDisable !== 'boolean') throw new Error('router-policy.momentumExitOnDisable must be boolean');
 
@@ -123,6 +129,7 @@ export function parseRouterPolicy(raw: unknown): RouterPolicy {
       maxStalenessMinutes: num(dc, 'maxStalenessMinutes', 'dataCheck', 5, 24 * 60),
     },
     momentumExitOnDisable: o.momentumExitOnDisable,
+    circuitBreaker: { maxUnderperformancePct: num(cb, 'maxUnderperformancePct', 'circuitBreaker', 1, 100) },
     backtest: {
       stakingApyPct: num(bt, 'stakingApyPct', 'backtest', 0, 50),
       swapFeeBps: num(bt, 'swapFeeBps', 'backtest', 0, 500),
@@ -132,5 +139,8 @@ export function parseRouterPolicy(raw: unknown): RouterPolicy {
   };
   if (policy.feeReserveLamports < 20_000_000n) throw new Error('router-policy.feeReserveSol must be at least 0.02 SOL (exits from every strategy must stay affordable)');
   if (!Number.isInteger(policy.switching.confirmations)) throw new Error('switching.confirmations must be an integer');
+  for (const [name, v] of [['trend.fastHours', trend.fastHours], ['trend.slowHours', trend.slowHours], ['volatility.windowHours', policy.volatility.windowHours]] as const) {
+    if (!Number.isInteger(v)) throw new Error(`${name} must be a whole number of hours`);
+  }
   return policy;
 }

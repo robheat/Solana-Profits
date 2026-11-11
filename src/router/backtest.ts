@@ -2,7 +2,8 @@
 // hourly SOL/USD history and measures the result in SOL (the goal) and USD, against
 // simply staking everything. The memecoin strategy cannot be replayed (no historical
 // memecoin data), so its weight is treated as staked; the "risk-on" regime therefore
-// never appears in a backtest.
+// never appears in a backtest. The circuit breaker is replayed too: once total value
+// falls too far below the staking-only line, the rest of the test is staking only.
 
 import { planRebalance, targetWeights, type Move } from './allocator.ts';
 import type { RegimeName, RouterPolicy } from './policy.ts';
@@ -37,6 +38,8 @@ export interface BacktestResult {
   moves: number;
   feesSol: number;
   hoursInRegime: Record<RegimeName, number>;
+  /** When the circuit breaker tripped (staking only from then on), or null. */
+  breakerTrippedAt: number | null;
 }
 
 const L = 1e9;
@@ -66,6 +69,8 @@ export function runBacktest(bars: PriceBar[], policy: RouterPolicy, opts: Backte
   let peakStakedOnlyUsd = peakUsd;
   let maxDdStakedOnlyUsd = 0;
   let tracker = initialTracker(bars[0]!.t);
+  let breakerTrippedAt: number | null = null;
+  const breakerLimit = policy.circuitBreaker.maxUnderperformancePct / 100;
   const switches: BacktestResult['switches'] = [];
   const hoursInRegime: Record<RegimeName, number> = { 'risk-on': 0, uptrend: 0, range: 0, downtrend: 0, unknown: 0 };
   const closes: number[] = [];
@@ -87,8 +92,9 @@ export function runBacktest(bars: PriceBar[], policy: RouterPolicy, opts: Backte
       if (upd.switched) switches.push({ t: bar.t, from: tracker.active, to: upd.state.active });
       tracker = upd.state;
       const { weights } = targetWeights(tracker.active, policy, signals);
+      if (breakerTrippedAt === null && (sol + staked + usd / price) / stakedOnly - 1 <= -breakerLimit) breakerTrippedAt = bar.t;
       // No memecoin history: its share is staked instead.
-      const w = { stake: weights.stake + weights.momentum, hedge: weights.hedge, momentum: 0 };
+      const w = breakerTrippedAt !== null ? { stake: 1, hedge: 0, momentum: 0 } : { stake: weights.stake + weights.momentum, hedge: weights.hedge, momentum: 0 };
       const toLamports = (x: number) => BigInt(Math.max(0, Math.floor(x * L)));
       const plan = planRebalance(
         { solLamports: toLamports(sol), stakeLamports: toLamports(staked), hedgeLamports: toLamports(usd / price), hedgeUnits: toLamports(usd), momentumLamports: 0n },
@@ -170,5 +176,6 @@ export function runBacktest(bars: PriceBar[], policy: RouterPolicy, opts: Backte
     moves,
     feesSol: fees,
     hoursInRegime,
+    breakerTrippedAt,
   };
 }

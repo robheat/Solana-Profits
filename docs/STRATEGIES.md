@@ -34,7 +34,7 @@ buy more back lower. It loses SOL when a "downtrend" turns out to be noise and y
 | `uptrend` | SOL up | 100% | 0% | 0% |
 | `range` | no clear trend | 100% | 0% | 0% |
 | `downtrend` | SOL down | 30% | 70% | 0% |
-| `unknown` | start-up, under 14 days of history | 100% | 0% | 0% |
+| `unknown` | start-up, under 28 days of price history | 100% | 0% | 0% |
 
 There are also `conservative` and `aggressive` profiles:
 
@@ -54,12 +54,30 @@ memecoin market never overrides a SOL downtrend.
 * **De-risk fast, re-risk slowly.** Moving to a *safer* regime happens as soon as it's confirmed. Moving to a
   *riskier* one also waits until the current regime is at least 24 hours old.
 * **Bands.** A strategy is only traded when it's more than 10% of equity off target, and never below 0.02 SOL.
+  Idle SOL is the exception: it earns nothing, so it's staked whenever staking is under target.
+* **Consecutive readings.** If the loop was down for more than 3 hours, a pending switch starts its
+  confirmations over. After a failed or untrusted reading it retries in 5 minutes.
 * **Order.** Moves free liquidity first (sell USDC, unstake), then fund (buy USDC, stake). They run one at a
   time, re-reading the wallet between moves.
 * **Reserve.** 0.03 SOL always stays liquid, and SOL earmarked for the memecoin budget is never staked or swapped.
 * **Memecoins switched off.** When a regime turns them off, no new positions open. Existing ones finish on their
   own exit rules (≤ 48h), or are sold at once with `"momentumExitOnDisable": true`.
 * **One trading loop.** `auto run` and `bot run` share a lock, so they can never trade the wallet at the same time.
+
+## Results tracking and the circuit breaker
+
+From its first live evaluation the router records the wallet's total value in SOL and the staking pool's
+exchange rate. Every hour it compares the wallet with what the starting balance would be worth **if it had
+simply been staked**. `auto status` shows the comparison, and `data/equity.jsonl` keeps the hourly history.
+
+If the total falls **10% below that staking-only line** (`circuitBreaker.maxUnderperformancePct`), the circuit
+breaker trips. The router sells the hedge, closes memecoin positions and stakes everything. It then stays in
+staking only, whatever the market does, until you run `auto resume`.
+
+* The comparison assumes no money moves in or out. After adding or withdrawing funds, run `auto resume` to
+  restart tracking; otherwise a withdrawal looks like a loss and can trip the breaker.
+* The breaker doesn't trip on untrusted data.
+* The backtester replays the breaker too and reports when it tripped.
 
 ## What switching costs, and what to expect
 
@@ -97,8 +115,9 @@ in backtests, so paper-trade it with `bot paper`.
 3. **Live:** `SOLANA_KEYPAIR_PATH=… node src/cli.ts auto run --execute`. The startup gate is the same as the
    bot's: a mainnet check, a pre-flight swap simulation and a typed confirmation. To keep it running, use the
    systemd unit in `deploy/` with `ExecStart=… auto run --execute --yes`.
-4. **Inspect:** `node src/cli.ts auto status` shows the active regime, any pending switch, the switch history
-   and the memecoin budget.
+4. **Inspect:** `node src/cli.ts auto status` shows the active regime, results against staking only, the
+   circuit breaker, the switch history and the memecoin budget. `status` and `monitor` now count the USDC
+   hedge and the bot's positions too.
 5. **Stop:** Ctrl-C stops the loop. `touch HALT` blocks all signing.
 
 The live loop needs network access to a Solana RPC, Jupiter (`lite-api.jup.ag`) and `benchmarks.pyth.network`.
@@ -131,4 +150,5 @@ Like the bot, it has to run on your own computer or a server.
 | `hedge.*` | USDC, 0.5% slippage, 0.5% impact | the hedge asset and its trading limits |
 | `dataCheck.maxPriceDisagreementPct` / `maxStalenessMinutes` | 3 / 180 | when the data is not trusted |
 | `momentumExitOnDisable` | false | sell memecoins immediately when switched off |
+| `circuitBreaker.maxUnderperformancePct` | 10 | return to staking only when this far below the staking-only line |
 | `backtest.*` | 6% APY, 10 bps swaps, 10 bps unstake, 0.00002 SOL per tx | backtest assumptions |

@@ -34,5 +34,6 @@
   "hedge": { "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "symbol": "USDC", "decimals": 6, "slippageBps": 50, "maxPriceImpactPct": 0.5 },
   "dataCheck": { "maxPriceDisagreementPct": 3, "maxStalenessMinutes": 180 },
   "momentumExitOnDisable": false,
+  "circuitBreaker": { "maxUnderperformancePct": 10 },
   "backtest": { "stakingApyPct": 6, "swapFeeBps": 10, "stakeExitFeeBps": 10, "txFeeSol": "0.00002" }
 }

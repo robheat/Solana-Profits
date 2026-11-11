@@ -76,20 +76,43 @@ export function rankCandidates(tokens: TokenInfo[], policy: BotPolicy, nowMs: nu
 
 export const ESTIMATED_TX_FEE_LAMPORTS = 5_000n;
 
-/** Size of the next position, or null with a reason. Never touches the fee reserve. */
+/** Set by the strategy router: the most the bot may hold in total, and what it holds now. */
+export interface SizingBudget {
+  maxExposureLamports: bigint;
+  exposureLamports: bigint;
+}
+
+/**
+ * Size of the next position, or null with a reason. Never touches the fee reserve.
+ * Standalone, a position is a share of the wallet's equity and an equity floor applies.
+ * Under a router budget, a position is a share of that budget instead (at least the
+ * minimum size, never more than the room left); the floor does not apply because the
+ * router caps the exposure and has its own portfolio-level stop.
+ */
 export function positionSize(p: {
   equityLamports: bigint;
   solLamports: bigint;
   openPositions: number;
   policy: BotPolicy;
   rentLamports: bigint;
+  budget?: SizingBudget;
 }): { lamports: bigint } | { lamports: null; reason: string } {
-  const { policy } = p;
+  const { policy, budget } = p;
   if (p.openPositions >= policy.maxOpenPositions) return { lamports: null, reason: `already holding ${p.openPositions}/${policy.maxOpenPositions} positions` };
-  if (p.equityLamports < policy.equityFloorLamports) return { lamports: null, reason: 'equity is below the floor: no new positions' };
-  const target = (p.equityLamports * BigInt(Math.round(policy.positionFraction * 10_000))) / 10_000n;
+  const fraction = BigInt(Math.round(policy.positionFraction * 10_000));
   const available = p.solLamports - policy.feeReserveLamports - p.rentLamports - policy.maxPriorityFeeLamports - ESTIMATED_TX_FEE_LAMPORTS;
-  const size = target < available ? target : available;
+  let size: bigint;
+  if (budget) {
+    const room = budget.maxExposureLamports - budget.exposureLamports;
+    size = (budget.maxExposureLamports * fraction) / 10_000n;
+    if (size < policy.minPositionLamports) size = policy.minPositionLamports;
+    if (room < size) size = room;
+    if (size < policy.minPositionLamports) return { lamports: null, reason: 'the memecoin budget leaves no room for a minimum-size position' };
+  } else {
+    if (p.equityLamports < policy.equityFloorLamports) return { lamports: null, reason: 'equity is below the floor: no new positions' };
+    size = (p.equityLamports * fraction) / 10_000n;
+  }
+  if (available < size) size = available;
   if (size < policy.minPositionLamports) return { lamports: null, reason: 'not enough free SOL for a minimum-size position' };
   return { lamports: size };
 }

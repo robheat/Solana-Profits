@@ -12,6 +12,7 @@ import { classifyRegime, classifyTrend, computeSignals, initialTracker, memeHeat
 import { planRebalance, targetWeights, type Holdings } from '../src/router/allocator.ts';
 import { runBacktest } from '../src/router/backtest.ts';
 import { parseBotPolicy } from '../src/bot/policy.ts';
+import { positionSize } from '../src/bot/strategy.ts';
 import { parseToken } from '../src/bot/feed.ts';
 import { TOKEN_PROGRAM_ID } from '../src/solana/constants.ts';
 import { MockJupiter } from './mock-jupiter.ts';
@@ -59,15 +60,15 @@ test('price history parsing: Pyth TradingView shim, CSV, cleaning', () => {
 test('trend classification: up, down, range, and not enough data', () => {
   const p = policyWith();
   assert.equal(computeSignals([1, 2, 3], [1, 2, 3], p), null);
-  assert.equal(minimumBars(p), 336);
-  assert.equal(classifyTrend(signalsOf(series(600, 200, 1.6), p), p), 'up');
-  assert.equal(classifyTrend(signalsOf(series(600, 200, 0.6), p), p), 'down');
-  assert.equal(classifyTrend(signalsOf(series(600, 600, 1), p), p), 'range');
+  assert.equal(minimumBars(p), 672);
+  assert.equal(classifyTrend(signalsOf(series(1000, 400, 1.6), p), p), 'up');
+  assert.equal(classifyTrend(signalsOf(series(1000, 400, 0.6), p), p), 'down');
+  assert.equal(classifyTrend(signalsOf(series(1000, 1000, 1), p), p), 'range');
 });
 
 test('hysteresis: an established trend persists until the gap shrinks below the exit threshold', () => {
   const p = policyWith();
-  const s = { ...signalsOf(series(600, 600, 1), p), trendPct: -2, priceVsSlowPct: -1 };
+  const s = { ...signalsOf(series(1000, 1000, 1), p), trendPct: -2, priceVsSlowPct: -1 };
   assert.equal(classifyTrend(s, p, null), 'range', 'a fresh reading needs the full -3% to call a downtrend');
   assert.equal(classifyTrend(s, p, 'down'), 'down', 'an active downtrend holds while the gap stays below -1%');
   assert.equal(classifyTrend({ ...s, trendPct: -0.5 }, p, 'down'), 'range');
@@ -156,10 +157,19 @@ test('rebalance planning: fund from liquid, rotate into the hedge, stay put insi
   assert.deepEqual(plan.moves[1], { kind: 'hedge-buy', lamports: 679_000_000n });
   // Slightly off target: inside the 10% band, no trades.
   plan = planRebalance(holdings({ solLamports: 30_000_000n, stakeLamports: 900_000_000n, hedgeLamports: 70_000_000n, hedgeUnits: 10n }), { stake: 1, hedge: 0, momentum: 0 }, p);
-  assert.equal(plan.moves.filter((m) => m.kind !== 'momentum-budget').length, 1, 'only the hedge is sold: its target is zero');
-  assert.equal(plan.moves[0]!.kind, 'hedge-sell');
+  assert.deepEqual(plan.moves.filter((m) => m.kind !== 'momentum-budget').map((m) => m.kind), ['hedge-sell', 'stake-deposit'], 'a zero-target hedge is sold whatever the band, and the proceeds are staked');
+  // Idle SOL is the exception to the band: it earns nothing, so it is staked.
   plan = planRebalance(holdings({ solLamports: 80_000_000n, stakeLamports: 920_000_000n }), { stake: 1, hedge: 0, momentum: 0 }, p);
+  assert.deepEqual(plan.moves[0], { kind: 'stake-deposit', lamports: 50_000_000n });
+  // ...unless it is below the staking tool's own minimum deposit.
+  plan = planRebalance(holdings({ solLamports: 70_000_000n, stakeLamports: 930_000_000n }), { stake: 1, hedge: 0, momentum: 0 }, p, { minStakeDepositLamports: 50_000_000n });
+  assert.equal(plan.moves.filter((m) => m.kind !== 'momentum-budget').length, 0);
+  // Staking slightly over target is inside the band: no withdrawal.
+  plan = planRebalance(holdings({ solLamports: 30_000_000n, stakeLamports: 400_000_000n, hedgeLamports: 570_000_000n, hedgeUnits: 9n }), { stake: 0.35, hedge: 0.65, momentum: 0 }, p);
   assert.equal(plan.moves.filter((m) => m.kind !== 'momentum-budget').length, 0, '5% off target is inside the band');
+  // Circuit breaker: memecoin positions are closed even when the policy would let them run.
+  plan = planRebalance(holdings({ solLamports: 30_000_000n, stakeLamports: 800_000_000n, momentumLamports: 170_000_000n }), { stake: 1, hedge: 0, momentum: 0 }, p, { forceMomentumExit: true });
+  assert.equal(plan.moves[0]!.kind, 'momentum-exit');
 });
 
 test('rebalance planning: back from the hedge, memecoin earmark, exits when switched off', () => {
@@ -198,6 +208,30 @@ test('backtest: rotating into the hedge in a crash beats staking in SOL; a rally
   // A conservative profile hedges less: less gain in a crash.
   const cons = runBacktest(series(24 * 90, 24 * 30, 0.5), policyWith({ profile: 'conservative' }), { startLamports: SOL });
   assert.ok(cons.finalSol < crash.finalSol && cons.finalSol > cons.stakedOnlySol);
+});
+
+test('backtest replays the circuit breaker: a hedge caught by a rally is stopped out', () => {
+  // A modest dip puts the hedge on, then a violent rally: being in USDC costs SOL fast.
+  const down = series(24 * 45, 24 * 30, 0.85);
+  const lastT = down[down.length - 1]!.t;
+  const lastP = down[down.length - 1]!.close;
+  const up = Array.from({ length: 24 }, (_, i) => ({ t: lastT + (i + 1) * 3_600_000, close: lastP * Math.pow(1.6, (i + 1) / 24) }));
+  const bars = [...down, ...up, ...Array.from({ length: 200 }, (_, i) => ({ t: lastT + (25 + i) * 3_600_000, close: lastP * 1.6 }))];
+  const tight = runBacktest(bars, policyWith({ circuitBreaker: { maxUnderperformancePct: 2 } }), { startLamports: SOL });
+  const loose = runBacktest(bars, policyWith({ circuitBreaker: { maxUnderperformancePct: 100 } }), { startLamports: SOL });
+  assert.equal(loose.breakerTrippedAt, null);
+  assert.ok(tight.breakerTrippedAt !== null && tight.breakerTrippedAt > lastT, 'trips during the rally');
+  assert.ok(tight.finalSol > loose.finalSol, `stopping out early kept more SOL: ${tight.finalSol} vs ${loose.finalSol}`);
+});
+
+test('memecoin sizing under a router budget ignores the standalone equity floor', () => {
+  const bp = parseBotPolicy(JSON.parse(readFileSync(resolve(REPO_ROOT, 'config/bot-policy.json'), 'utf8')));
+  const base = { equityLamports: 130_000_000n, solLamports: 130_000_000n, openPositions: 0, policy: bp, rentLamports: 2_039_280n };
+  assert.equal(positionSize(base).lamports, null, 'standalone: below the 0.2 SOL floor');
+  // Budget 0.097 SOL: 30% would be 0.029, raised to the 0.05 minimum.
+  assert.equal(positionSize({ ...base, budget: { maxExposureLamports: 97_000_000n, exposureLamports: 0n } }).lamports, 50_000_000n);
+  assert.equal(positionSize({ ...base, budget: { maxExposureLamports: 97_000_000n, exposureLamports: 50_000_000n } }).lamports, null, 'no room left');
+  assert.equal(positionSize({ ...base, solLamports: 1_000_000_000n, budget: { maxExposureLamports: 600_000_000n, exposureLamports: 500_000_000n } }).lamports, 100_000_000n, 'capped by the room left');
 });
 
 test('router policy validation', () => {

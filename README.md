@@ -105,7 +105,7 @@ paths are in [docs/RUNBOOK.md](docs/RUNBOOK.md).
 
 ## Verification status
 
-* **174 automated tests** (`npm test`, covering the staking tool, the bot and the strategy router) plus a strict type-check
+* **179 automated tests** (`npm test`, covering the staking tool, the bot and the strategy router) plus a strict type-check
   (`npm run typecheck`). Cross-checks:
   * Transactions, instructions, PDAs, ATAs, signatures and base58 are **byte-for-byte identical** to
     `@solana/web3.js`, `@solana/spl-token`, `@solana/spl-stake-pool` and `bs58`.
